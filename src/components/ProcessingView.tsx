@@ -34,83 +34,89 @@ const ProcessingView: React.FC<ProcessingViewProps> = ({ state, file, apiKey, on
   const transcribeFile = async (targetFile: File) => {
     try {
       if (apiKey.startsWith('AIzaSy')) {
-        // --- GEMINI API ---
-        const reader = new FileReader();
-        reader.readAsDataURL(targetFile);
-        reader.onloadend = async () => {
-          try {
-            const base64data = (reader.result as string).split(',')[1];
-            // La API de Gemini exige un MimeType estricto de su lista blanca.
-            let mimeType = targetFile.type;
-            if (!mimeType || mimeType.includes('quicktime') || mimeType.includes('mkv') || mimeType === 'video/x-matroska') {
-               // Fallback más seguro para Google Gemini en videos
-               mimeType = 'video/mp4';
-            } else if (mimeType.includes('audio') && !['audio/aac', 'audio/flac', 'audio/mp3', 'audio/m4a', 'audio/mp4', 'audio/ogg', 'audio/wav', 'audio/webm'].includes(mimeType)) {
-               mimeType = 'audio/mp3'; // Fallback genérico para audios raros
-            }
-            
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-            const res = await fetch(url, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                contents: [{
-                  parts: [
-                    { text: "Transcribe the following video exactly in Spanish. Organize the transcription into logical, cohesive chunks or paragraphs based on topic changes or natural breaks in the speech. Return a strict JSON object with two fields: 'suggestedFileName' (a short, descriptive, kebab-case title summarizing the whole video topic, max 4 words) and 'chunks' (an array where each object has: 'topic', 'summary', and 'content' as the exact transcription). Do not skip any spoken word." },
-                    { inlineData: { mimeType: mimeType, data: base64data } }
-                  ]
-                }],
-                generationConfig: { 
-                  temperature: 0.1,
-                  responseMimeType: "application/json",
-                  responseSchema: {
-                    type: "object",
-                    properties: {
-                      suggestedFileName: { type: "string" },
-                      chunks: {
-                        type: "array",
-                        items: {
-                          type: "object",
-                          properties: {
-                            topic: { type: "string" },
-                            summary: { type: "string" },
-                            content: { type: "string" }
-                          },
-                          required: ["topic", "summary", "content"]
-                        }
-                      }
-                    },
-                    required: ["suggestedFileName", "chunks"]
-                  }
-                }
-              })
-            });
+        // --- GEMINI API (FILE API FOR LARGE FILES UP TO 2GB) ---
+        let mimeType = targetFile.type;
+        if (!mimeType || mimeType.includes('quicktime') || mimeType.includes('mkv') || mimeType === 'video/x-matroska') {
+           mimeType = 'video/mp4';
+        } else if (mimeType.includes('audio') && !['audio/aac', 'audio/flac', 'audio/mp3', 'audio/m4a', 'audio/mp4', 'audio/ogg', 'audio/wav', 'audio/webm'].includes(mimeType)) {
+           mimeType = 'audio/mp3'; 
+        }
 
-            if (!res.ok) {
-              const errJson = await res.json().catch(() => ({}));
-              throw new Error(errJson.error?.message || 'Error en Gemini API. Si tu archivo es muy pesado, Gemini podría rechazarlo.');
+        // 1. Upload File directly to Gemini API
+        const uploadUrl = `https://generativelanguage.googleapis.com/upload/v1beta/files?uploadType=media&key=${apiKey}`;
+        const uploadRes = await fetch(uploadUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': mimeType,
+          },
+          body: targetFile
+        });
+        
+        if (!uploadRes.ok) {
+           const errJson = await uploadRes.json().catch(() => ({}));
+           throw new Error(errJson.error?.message || 'Error subiendo el video a los servidores de Gemini.');
+        }
+        
+        const uploadData = await uploadRes.json();
+        const fileUri = uploadData.file.uri;
+
+        // 2. Generate Content using the File URI
+        const generationUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+        const genRes = await fetch(generationUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: "Transcribe the following video exactly in Spanish. Organize the transcription into logical, cohesive chunks or paragraphs based on topic changes or natural breaks in the speech. Return a strict JSON object with two fields: 'suggestedFileName' (a short, descriptive, kebab-case title summarizing the whole video topic, max 4 words) and 'chunks' (an array where each object has: 'topic', 'summary', and 'content' as the exact transcription). Do not skip any spoken word." },
+                { fileData: { mimeType: mimeType, fileUri: fileUri } }
+              ]
+            }],
+            generationConfig: { 
+              temperature: 0.1,
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: "object",
+                properties: {
+                  suggestedFileName: { type: "string" },
+                  chunks: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        topic: { type: "string" },
+                        summary: { type: "string" },
+                        content: { type: "string" }
+                      },
+                      required: ["topic", "summary", "content"]
+                    }
+                  }
+                },
+                required: ["suggestedFileName", "chunks"]
+              }
             }
-            const data = await res.json();
-            const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-            if(!textResponse) throw new Error("La API no devolvió ninguna transcripción.");
-            
-            try {
-              const parsedResponse: TranscriptResponse = JSON.parse(textResponse);
-              onTranscriptionDone(parsedResponse);
-            } catch (parseError) {
-              // Fallback si la IA ignoró el schema
-              console.error("Error parseando JSON de Gemini:", parseError);
-              onTranscriptionDone({
-                suggestedFileName: targetFile.name.replace(/\.[^/.]+$/, "") + "-rag",
-                chunks: [{ topic: "Transcripción General", summary: "Video completo", content: textResponse }]
-              });
-            }
-            
-          } catch(err: any) {
-            console.error(err);
-            onError('Error transcribiendo el video con Google IA: ' + err.message);
-          }
-        };
+          })
+        });
+
+        if (!genRes.ok) {
+          const errJson = await genRes.json().catch(() => ({}));
+          throw new Error(errJson.error?.message || 'Error procesando la transcripción en Gemini API.');
+        }
+        
+        const data = await genRes.json();
+        const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        if(!textResponse) throw new Error("La API no devolvió ninguna transcripción.");
+        
+        try {
+          const parsedResponse: TranscriptResponse = JSON.parse(textResponse);
+          onTranscriptionDone(parsedResponse);
+        } catch (parseError) {
+          console.error("Error parseando JSON de Gemini:", parseError);
+          onTranscriptionDone({
+            suggestedFileName: targetFile.name.replace(/\.[^/.]+$/, "") + "-rag",
+            chunks: [{ topic: "Transcripción General", summary: "Video completo", content: textResponse }]
+          });
+        }
       } else {
         // --- OPENAI / GROQ API ---
         const formData = new FormData();
