@@ -62,20 +62,25 @@ const ProcessingView: React.FC<ProcessingViewProps> = ({ state, file, apiKey, on
         const fileName = uploadData.file.name;
 
         // 1.5 Polling: Wait for Google to process the video (ACTIVE state)
+        // La API de subida devuelve { file: { name: '...', uri: '...', state: '...' } }
         let fileState = uploadData.file.state || 'PROCESSING';
-        while (fileState === 'PROCESSING') {
+        
+        // Bloqueamos la ejecución hasta que el estado sea explícitamente ACTIVE
+        while (fileState !== 'ACTIVE') {
+           if (fileState === 'FAILED') {
+              throw new Error('Los laboratorios de Google reportan que el archivo está corrupto o es irreconocible para ellos.');
+           }
            // Esperamos 5 segundos antes de volver a preguntar
            await new Promise((resolve) => setTimeout(resolve, 5000));
+           
            const checkRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${apiKey}`);
            if (!checkRes.ok) {
               throw new Error('Error de red al intentar consultar el estado del video en Google.');
            }
-           const checkData = await checkRes.json();
-           fileState = checkData.state;
            
-           if (fileState === 'FAILED') {
-              throw new Error('Los laboratorios de Google reportan que el archivo está corrupto o es irreconocible.');
-           }
+           const checkData = await checkRes.json();
+           // Si por alguna razón la API no devuelve state en un frame, asumimos que sigue procesando
+           fileState = checkData.state || 'PROCESSING';
         }
 
         // 2. Generate Content using the File URI
