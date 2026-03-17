@@ -1,0 +1,212 @@
+import React, { useEffect, useRef } from 'react';
+import { Mic } from 'lucide-react';
+import type { TranscriptChunk, TranscriptResponse } from '../types';
+
+interface ProcessingViewProps {
+  state: 'extracting' | 'transcribing';
+  file: File | null;
+  apiKey: string;
+  onExtractionDone: (url: string, blob: Blob) => void;
+  onTranscriptionDone: (data: TranscriptResponse) => void;
+  onError: (error: string) => void;
+}
+
+const ProcessingView: React.FC<ProcessingViewProps> = ({ state, file, apiKey, onExtractionDone, onTranscriptionDone, onError }) => {
+  const extractionStartedRef = useRef(false);
+
+  useEffect(() => {
+    // Ya no extraemos audio localmente, pasamos directo a enviar el archivo a la API
+    // Para no romper el flujo de App.tsx, fingiremos que terminó la "extracción" instantáneamente
+    if (state === 'extracting') {
+      if (!extractionStartedRef.current && file) {
+        extractionStartedRef.current = true;
+        
+        // Simular que devolvemos un audioUrl/blob vacío solo por compatibilidad de tipos
+        const dummyBlob = new Blob([], { type: 'audio/mp3' });
+        onExtractionDone('', dummyBlob); 
+        
+        // Iniciar transcripción con el archivo de video original
+        transcribeFile(file);
+      }
+    }
+  }, [state, file]);
+
+  const transcribeFile = async (targetFile: File) => {
+    try {
+      if (apiKey.startsWith('AIzaSy')) {
+        // --- GEMINI API ---
+        const reader = new FileReader();
+        reader.readAsDataURL(targetFile);
+        reader.onloadend = async () => {
+          try {
+            const base64data = (reader.result as string).split(',')[1];
+            // La API de Gemini acepta mime types de video para extraer audio directamente
+            const mimeType = targetFile.type || 'video/mp4'; 
+            
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+            const res = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [{
+                  parts: [
+                    { text: "Transcribe the following video exactly in Spanish. Organize the transcription into logical, cohesive chunks or paragraphs based on topic changes or natural breaks in the speech. Return a strict JSON object with two fields: 'suggestedFileName' (a short, descriptive, kebab-case title summarizing the whole video topic, max 4 words) and 'chunks' (an array where each object has: 'topic', 'summary', and 'content' as the exact transcription). Do not skip any spoken word." },
+                    { inlineData: { mimeType: mimeType, data: base64data } }
+                  ]
+                }],
+                generationConfig: { 
+                  temperature: 0.1,
+                  responseMimeType: "application/json",
+                  responseSchema: {
+                    type: "object",
+                    properties: {
+                      suggestedFileName: { type: "string" },
+                      chunks: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            topic: { type: "string" },
+                            summary: { type: "string" },
+                            content: { type: "string" }
+                          },
+                          required: ["topic", "summary", "content"]
+                        }
+                      }
+                    },
+                    required: ["suggestedFileName", "chunks"]
+                  }
+                }
+              })
+            });
+
+            if (!res.ok) {
+              const errJson = await res.json().catch(() => ({}));
+              throw new Error(errJson.error?.message || 'Error en Gemini API. Si tu archivo es muy pesado, Gemini podría rechazarlo.');
+            }
+            const data = await res.json();
+            const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            if(!textResponse) throw new Error("La API no devolvió ninguna transcripción.");
+            
+            try {
+              const parsedResponse: TranscriptResponse = JSON.parse(textResponse);
+              onTranscriptionDone(parsedResponse);
+            } catch (parseError) {
+              // Fallback si la IA ignoró el schema
+              console.error("Error parseando JSON de Gemini:", parseError);
+              onTranscriptionDone({
+                suggestedFileName: targetFile.name.replace(/\.[^/.]+$/, "") + "-rag",
+                chunks: [{ topic: "Transcripción General", summary: "Video completo", content: textResponse }]
+              });
+            }
+            
+          } catch(err: any) {
+            console.error(err);
+            onError('Error transcribiendo el video con Google IA: ' + err.message);
+          }
+        };
+      } else {
+        // --- OPENAI / GROQ API ---
+        const formData = new FormData();
+        // Groq y OpenAI Whisper soportan nativamente archivos .mp4, .webm, etc.
+        // Simulamos un nombre seguro
+        const cleanExt = targetFile.type.includes('video') ? 'mp4' : 'mp3';
+        formData.append('file', targetFile, `media.${cleanExt}`);
+        formData.append('response_format', 'verbose_json'); // Request segments
+        formData.append('language', 'es'); // Asumimos español
+
+        const isGroq = apiKey.startsWith('gsk_');
+        const apiUrl = isGroq
+            ? 'https://api.groq.com/openai/v1/audio/transcriptions'
+            : 'https://api.openai.com/v1/audio/transcriptions';
+
+        const modelName = isGroq ? 'whisper-large-v3-turbo' : 'whisper-1';
+        formData.set('model', modelName);
+
+        const res = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: formData
+        });
+
+        if (!res.ok) {
+          const errJson = await res.json().catch(() => ({}));
+          throw new Error(errJson.error?.message || `Error en API externa (${modelName}). Verifica el tamaño del archivo.`);
+        }
+
+        const data = await res.json();
+        
+        let finalChunks: TranscriptChunk[] = [];
+        
+        if (data.segments && Array.isArray(data.segments)) {
+           let currentContent = "";
+           let segmentCount = 0;
+           let topicIndex = 1;
+           
+           for (let i = 0; i < data.segments.length; i++) {
+              currentContent += data.segments[i].text + " ";
+              segmentCount++;
+              
+              if (segmentCount >= 8 || i === data.segments.length - 1) {
+                 finalChunks.push({
+                   topic: `Fragmento de Contexto #${topicIndex}`,
+                   summary: "Sección extraída automáticamente del flujo de audio.",
+                   content: currentContent.trim()
+                 });
+                 currentContent = "";
+                 segmentCount = 0;
+                 topicIndex++;
+              }
+           }
+        } else {
+           finalChunks = [{
+             topic: "Transcripción General",
+             summary: "Audio completo",
+             content: data.text || "No se pudo extraer texto."
+           }];
+        }
+
+        // Para Whisper, no tenemos el título corto inteligente (a menos que hagamos un pase extra)
+        // Usaremos el nombre bruto del archivo como fallback seguro.
+        const fallbackName = targetFile.name.replace(/\.[^/.]+$/, "").replace(/\s+/g, '-').toLowerCase() + "-rag";
+        
+        onTranscriptionDone({
+          suggestedFileName: fallbackName,
+          chunks: finalChunks
+        });
+      }
+    } catch (err: any) {
+      console.error(err);
+      onError('Error crítico transcribiendo: ' + err.message);
+    }
+  };
+
+  return (
+    <div className="w-full flex justify-center py-10 animate-fade-in">
+       <div className="flex flex-col items-center">
+         
+          <div className="relative mb-8">
+            <div className="absolute inset-0 bg-primary-glow blur-xl rounded-full opacity-50 pulse-glow"></div>
+            <div className="w-24 h-24 rounded-full glass-panel flex items-center justify-center relative z-10 border-primary">
+                 <Mic size={40} className="text-accent animate-pulse" />
+            </div>
+         </div>
+
+         <h3 className="text-xl font-semibold mb-2 text-text-100">
+          Enviando y analizando video inteligente...
+        </h3>
+        <p className="text-text-400">
+          Solo tomará unos segundos...
+        </p>
+
+         <div className="w-full max-w-sm h-2 bg-glass-bg rounded-full overflow-hidden">
+            <div className="h-full bg-gradient-to-r from-primary to-accent transition-all duration-1000 w-full animate-pulse"></div>
+         </div>
+       </div>
+    </div>
+  );
+};
+
+export default ProcessingView;
