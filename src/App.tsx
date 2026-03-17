@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { FileVideo, Shield } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { FileVideo, Shield, Key } from 'lucide-react';
 import './App.css';
 import './utils.css';
 
@@ -12,14 +12,34 @@ import type { TranscriptResponse } from './types';
 export type ProcessState = 'idle' | 'extracting' | 'transcribing' | 'done' | 'error';
 
 function App() {
-  // Hardcoded API Key to skip configuration step
-  const apiKey = 'AIzaSyAPgJBvfA0gcxfX5MnLBO47gYU8NBRvMG0';
+  // Intentar cargar la llave desde el entorno de Vercel/Vite. Si no existe, usar localStorage
+  const envKey = import.meta.env.VITE_GEMINI_API_KEY || '';
+  const [apiKey, setApiKey] = useState<string>(envKey);
+  const [isKeyValid, setIsKeyValid] = useState<boolean>(!!envKey);
   
   const [videoFile, setVideoFile] = useState<File | null>(null);
   
   const [processState, setProcessState] = useState<ProcessState>('idle');
   const [transcription, setTranscription] = useState<TranscriptResponse | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>('');
+
+  useEffect(() => {
+    if (!envKey) {
+      const savedKey = localStorage.getItem('gemini_api_key');
+      if (savedKey) {
+        setApiKey(savedKey);
+        setIsKeyValid(true);
+      }
+    }
+  }, [envKey]);
+
+  const handleSaveKey = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (apiKey.trim().length > 15) {
+      localStorage.setItem('gemini_api_key', apiKey.trim());
+      setIsKeyValid(true);
+    }
+  };
 
   const handleReset = () => {
     setVideoFile(null);
@@ -53,11 +73,38 @@ function App() {
               </div>
 
               {processState === 'idle' && (
-                 <Uploader 
-                   onFileSelect={setVideoFile} 
-                   file={videoFile} 
-                   onStart={() => setProcessState('extracting')} 
-                 />
+                 <>
+                   {!isKeyValid ? (
+                     <div className="glass-panel p-6 border border-warning/30 bg-warning/5 rounded-xl animate-fade-in relative overflow-hidden">
+                       <div className="absolute top-0 left-0 w-1 h-full bg-warning"></div>
+                       <h3 className="text-white text-lg font-medium mb-2 flex items-center gap-2">
+                         <Key size={18} className="text-warning" />
+                         Protección de API
+                       </h3>
+                       <p className="text-text-400 text-sm mb-4">
+                         Parece que no hay una API Key configurada en Vercel. Por seguridad, ingresa una llave de Google Gemini válida aquí abajo. Solo se guardará localmente en tu navegador.
+                       </p>
+                       <form onSubmit={handleSaveKey} className="flex gap-3">
+                         <input 
+                           type="password" 
+                           placeholder="AIzaSy..." 
+                           className="flex-1 bg-black/40 border border-glass-border rounded-lg px-4 py-2 text-white focus:outline-none focus:border-primary transition-colors"
+                           value={apiKey}
+                           onChange={(e) => setApiKey(e.target.value)}
+                         />
+                         <button type="submit" className="btn btn-primary px-6" disabled={apiKey.length < 15}>
+                           Desbloquear
+                         </button>
+                       </form>
+                     </div>
+                   ) : (
+                     <Uploader 
+                       onFileSelect={setVideoFile} 
+                       file={videoFile} 
+                       onStart={() => setProcessState('extracting')} 
+                     />
+                   )}
+                 </>
               )}
 
               {(processState === 'extracting' || processState === 'transcribing') && (
