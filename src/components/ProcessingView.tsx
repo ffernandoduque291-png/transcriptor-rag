@@ -236,8 +236,9 @@ const ProcessingView: React.FC<ProcessingViewProps> = ({ state, file, apiKey, on
           Solo tomará unos segundos...
         </p>
 
-         <div className="w-full max-w-sm h-2 bg-glass-bg rounded-full overflow-hidden">
-            <div className="h-full bg-gradient-to-r from-primary to-accent transition-all duration-1000 w-full animate-pulse"></div>
+         <div className="w-full max-w-sm h-3 bg-glass-border/30 rounded-full overflow-hidden mt-6 relative shadow-inner">
+            <div className="absolute top-0 left-0 h-full bg-gradient-to-r from-primary via-accent to-primary animate-[pulse_2s_ease-in-out_infinite] blur-[1px] w-full opacity-80"></div>
+            <div className="absolute top-0 left-0 h-full bg-gradient-to-r from-transparent via-white/50 to-transparent w-full animate-[shimmer_2s_infinite]"></div>
          </div>
        </div>
     </div>
