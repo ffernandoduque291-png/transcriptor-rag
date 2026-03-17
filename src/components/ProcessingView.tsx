@@ -40,8 +40,14 @@ const ProcessingView: React.FC<ProcessingViewProps> = ({ state, file, apiKey, on
         reader.onloadend = async () => {
           try {
             const base64data = (reader.result as string).split(',')[1];
-            // La API de Gemini acepta mime types de video para extraer audio directamente
-            const mimeType = targetFile.type || 'video/mp4'; 
+            // La API de Gemini exige un MimeType estricto de su lista blanca.
+            let mimeType = targetFile.type;
+            if (!mimeType || mimeType.includes('quicktime') || mimeType.includes('mkv') || mimeType === 'video/x-matroska') {
+               // Fallback más seguro para Google Gemini en videos
+               mimeType = 'video/mp4';
+            } else if (mimeType.includes('audio') && !['audio/aac', 'audio/flac', 'audio/mp3', 'audio/m4a', 'audio/mp4', 'audio/ogg', 'audio/wav', 'audio/webm'].includes(mimeType)) {
+               mimeType = 'audio/mp3'; // Fallback genérico para audios raros
+            }
             
             const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
             const res = await fetch(url, {

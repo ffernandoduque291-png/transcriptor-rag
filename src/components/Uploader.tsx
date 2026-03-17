@@ -25,16 +25,26 @@ const Uploader: React.FC<UploaderProps> = ({ onFileSelect, file, onStart }) => {
     e.preventDefault();
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const selectedFile = e.dataTransfer.files[0];
-      if (selectedFile.type.includes('video') || selectedFile.type.includes('audio')) {
-        onFileSelect(selectedFile);
-      }
+      processSelectedFile(e.dataTransfer.files[0]);
     }
   };
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      onFileSelect(e.target.files[0]);
+      processSelectedFile(e.target.files[0]);
+    }
+  };
+
+  const processSelectedFile = (selectedFile: File) => {
+    if (selectedFile.type.includes('video') || selectedFile.type.includes('audio')) {
+      const maxSizeMB = 19; // Safe margin below 20MB Gemini payload limit
+      if (selectedFile.size > maxSizeMB * 1024 * 1024) {
+        alert(`❌ Archivo demasiado pesado.\n\nEl archivo pesa ${(selectedFile.size / (1024*1024)).toFixed(1)}MB.\n\nPor seguridad de la API de Google en navegadores, el peso máximo permitido es de ${maxSizeMB}MB. Por favor comprime tu video o recórtalo.`);
+        return;
+      }
+      onFileSelect(selectedFile);
+    } else {
+      alert("Por favor selecciona un archivo de audio o video válido.");
     }
   };
 
