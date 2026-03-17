@@ -48,6 +48,13 @@ function App() {
     setErrorMsg('');
   };
 
+  const handleResetKey = () => {
+    localStorage.removeItem('gemini_api_key');
+    setApiKey('');
+    setIsKeyValid(false);
+    handleReset();
+  };
+
   return (
     <div className="app-container">
       <header className="app-header animate-fade-in">
@@ -133,9 +140,14 @@ function App() {
                   </div>
                   <h3 className="text-xl mb-2 text-white">Ocurrió un error</h3>
                   <p className="text-text-400 mb-6">{errorMsg}</p>
-                  <button onClick={handleReset} className="btn btn-primary">
-                    Intentar nuevamente
-                  </button>
+                  <div className="flex flex-col gap-3 justify-center items-center">
+                    <button onClick={handleReset} className="btn btn-primary w-full max-w-xs">
+                      Intentar nuevamente
+                    </button>
+                    <button onClick={handleResetKey} className="btn btn-glass w-full max-w-xs text-sm">
+                      <Key size={16} /> Cambiar API Key
+                    </button>
+                  </div>
                 </div>
               )}
 
